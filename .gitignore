@@ -1,0 +1,16 @@
+**/bin/
+**/obj/
+publish/
+artifacts/
+.wrangler/
+node_modules/
+.env
+.env.*
+UserData/
+UserCache/
+AppCache/
+*.log
+*.key
+*.pfx
+*secrets*.json
+PFX-PAROLA.txt
