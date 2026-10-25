@@ -1,0 +1,18 @@
+@foreach(var tile in Group.Tiles)
+{
+ var art=Artworks.FirstOrDefault(item=>item.Id==tile.ArtworkId);
+ if(art is not null)
+ {
+  <g transform="@("translate("+F(tile.X)+" "+F(tile.Y)+") rotate("+(tile.Rotation*90)+")")">
+   <svg x="-0.5" y="@F(-tile.Height/2)" width="1" height="@F(tile.Height)" viewBox="@(tile.Col+" "+F(tile.Row*tile.Height)+" 1 "+F(tile.Height))" overflow="hidden">
+    <image href="@art.ImagePath" x="0" y="0" width="4" height="@F(4*tile.Height)" preserveAspectRatio="xMidYMid meet" />
+   </svg>
+   <rect x="-0.5" y="@F(-tile.Height/2)" width="1" height="@F(tile.Height)" class="tile-edge" />
+  </g>
+ }
+}
+@code {
+ [Parameter,EditorRequired]public AssemblyGroup Group{get;set;}=new();
+ [Parameter,EditorRequired]public List<Artwork> Artworks{get;set;}=[];
+ static string F(double value)=>value.ToString("0.######",System.Globalization.CultureInfo.InvariantCulture);
+}

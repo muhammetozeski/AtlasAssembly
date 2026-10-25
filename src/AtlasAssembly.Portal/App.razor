@@ -1,0 +1,4 @@
+<Router AppAssembly="@typeof(App).Assembly">
+ <Found Context="route"><ErrorBoundary @key="route"><ChildContent><RouteView RouteData="@route" /><FocusOnNavigate RouteData="@route" Selector="h1" /></ChildContent><ErrorContent><main class="recovery"><h1>The table could not open.</h1><p>Your saved assembly has not been replaced.</p><a href="">Return to the gallery</a></main></ErrorContent></ErrorBoundary></Found>
+ <NotFound><main class="recovery"><h1>This table was not found.</h1><a href="">Open the gallery</a></main></NotFound>
+</Router>

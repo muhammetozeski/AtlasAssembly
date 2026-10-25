@@ -1,0 +1,21 @@
+<svg class="assembly-picture" viewBox="@ViewBox" role="img" aria-label="@Label" preserveAspectRatio="xMidYMid meet">
+ <AssemblyTiles Group="Group" Artworks="Artworks" />
+</svg>
+@code {
+ [Parameter,EditorRequired]public AssemblyGroup Group{get;set;}=new();
+ [Parameter,EditorRequired]public List<Artwork> Artworks{get;set;}=[];
+ [Parameter]public string Label{get;set;}="Assembly preview";
+ string ViewBox
+ {
+  get
+  {
+   if(Group.Tiles.Count==0)return "0 0 1 1";
+   var left=Group.Tiles.Min(tile=>tile.X-(tile.Rotation%2==0?tile.Width:tile.Height)/2);
+   var top=Group.Tiles.Min(tile=>tile.Y-(tile.Rotation%2==0?tile.Height:tile.Width)/2);
+   var right=Group.Tiles.Max(tile=>tile.X+(tile.Rotation%2==0?tile.Width:tile.Height)/2);
+   var bottom=Group.Tiles.Max(tile=>tile.Y+(tile.Rotation%2==0?tile.Height:tile.Width)/2);
+   return F(left-.05)+" "+F(top-.05)+" "+F(right-left+.1)+" "+F(bottom-top+.1);
+  }
+ }
+ static string F(double value)=>value.ToString("0.######",System.Globalization.CultureInfo.InvariantCulture);
+}

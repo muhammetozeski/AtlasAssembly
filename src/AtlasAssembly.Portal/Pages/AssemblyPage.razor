@@ -1,0 +1,155 @@
+@page "/"
+@page "/room/{RoomId}"
+@implements IAsyncDisposable
+@inject AtlasClient Client
+@inject IJSRuntime JS
+@inject NavigationManager Navigation
+<PageTitle>Atlas Assembly</PageTitle>
+<div class="atlas-shell">
+ <header class="table-header"><span class="wordmark">Atlas Assembly</span>@if(Client.Session is not null){<button class="quiet-button" disabled="@Client.Busy" @onclick="Gallery">Gallery</button>}<span class="theme-control" data-atlas-theme-control></span></header>
+ @if(!string.IsNullOrEmpty(Client.Library.Warning)){<p class="message error" role="status">@Client.Library.Warning</p>}
+ @if(!string.IsNullOrEmpty(Client.Message)){<p class="message @(Client.Failed?"error":"")" role="status">@Client.Message</p>}
+ @if(Client.ConnectionMessage.Length>0){<div class="message error" role="status"><p>@Client.ConnectionMessage</p>@if(!Client.RoomUnavailable){<button disabled="@Client.Busy" @onclick="Reconnect">Reconnect</button>}</div>}
+ @if(StartupError.Length>0){<section class="opening"><h1>The paintings could not open.</h1><p>@StartupError</p><button @onclick="Initialize">Try again</button></section>}
+ else if(!Client.Ready){<section class="opening"><h1>Opening the paintings.</h1></section>}
+ else if(Client.Session is {Registration:not null})
+ {
+  <main class="entry">@if(Client.Session.KnownRegistrationError is {} known){<h1>Room entry stopped.</h1><p>@known.Error</p>}else{<h1>Return to your table.</h1><p>The room entry was not confirmed. Resume it to recover the same player.</p><button class="primary" disabled="@Client.Busy" @onclick="ResumeRegistration">Resume room entry</button>}</main>
+ }
+ else if(Client.Table is not {} table)
+ {
+  <main class="gallery">
+   <div class="gallery-intro"><h1>@(InvitationId is null?"Three paintings. One shared rack.":"Join the painting table.")</h1><p>Join scattered pieces into whole paintings.</p>
+   @if(InvitationId is null){<button class="primary start" disabled="@Client.Busy" @onclick="StartSolo">Start assembly <span aria-hidden="true">↗</span></button>}
+   else if(SavedInvitation is {} saved){<button class="primary start" disabled="@Client.Busy" @onclick="()=>Resume(saved.Id)">Return to your assembly</button>}
+   else{<label>Your name<input maxlength="30" @bind="Name" @bind:event="oninput" autocomplete="nickname" disabled="@Client.Busy"></label>@if(Client.Configuration.Configured){<button class="primary start" disabled="@(Client.Busy||string.IsNullOrWhiteSpace(Name))" @onclick="JoinRoom">Join assembly</button>}else{<p>Shared tables could not be reached.</p><button disabled="@Client.Busy" @onclick="CheckAvailability">Check shared tables</button>}}
+   </div>
+   <div class="painting-collection">@foreach(var art in Client.Artworks){<figure><img src="@art.ImagePath" width="@art.Width" height="@art.Height" alt="@art.Title"><figcaption><strong>@art.Title</strong><span>@art.Artist</span></figcaption></figure>}</div>
+   <div class="gallery-lower">
+   @if(InvitationId is null){<details class="start-together"><summary>Assemble with friends</summary>@if(Client.Configuration.Configured){<label>Your name<input maxlength="30" @bind="Name" @bind:event="oninput" autocomplete="nickname" disabled="@Client.Busy"></label><button disabled="@(Client.Busy||string.IsNullOrWhiteSpace(Name)||!Client.Library.Writable)" @onclick="CreateRoom">Create a shared table</button>}else{<p>Shared tables could not be reached.</p><button disabled="@Client.Busy" @onclick="CheckAvailability">Check shared tables</button>}</details>}
+   @if(Client.Library.Sessions.Count>0){<section class="saved-tables"><h2>Continue an assembly</h2>@foreach(var session in Client.Library.Sessions){<button class="saved-table" disabled="@Client.Busy" @onclick="()=>Resume(session.Id)"><span>@(session.Mode=="solo"?"Solo assembly":session.EntryUnavailable?"Room entry unavailable":"Shared assembly")<small>@DateTimeOffset.FromUnixTimeMilliseconds(session.SavedAt).ToLocalTime().ToString("MMM d, HH:mm")</small></span><span aria-hidden="true">→</span></button>}</section>}
+   </div>
+   <div @ref="AdSurface"></div>
+  </main>
+ }
+ else if(table.Status=="complete")
+ {
+  <main class="finished"><h1>Three paintings, reassembled.</h1>@if(table.Mode=="solo-takeover"){<p>The room was continued alone. Earlier contributions are kept.</p>}<div class="finished-paintings">@foreach(var art in Client.Artworks){<figure><img src="@art.ImagePath" width="@art.Width" height="@art.Height" alt="@art.Title"><figcaption>@art.Title</figcaption></figure>}</div><button class="primary" disabled="@Client.Busy" @onclick="StartSolo">Start another assembly</button><div @ref="AdSurface"></div></main>
+ }
+ else
+ {
+  <main class="playground">
+   <div class="play-heading"><h1>@(table.Mode=="team"?"The shared table":"Your painting table")</h1><span class="completion">@table.Groups.Count(group=>group.Location=="completed") / 3 paintings</span></div>
+   @if(Client.HasPending){<div class="pending-action" role="status"><p>A move is unconfirmed. Check the room before making another.</p>@if(Client.RoomConnected){<button disabled="@Client.Busy" @onclick="CheckRoom">Check room</button><button disabled="@Client.Busy" @onclick="RetryMove">Retry the same move</button>}</div>}
+   <div class="game-columns">
+    <section class="rack-panel"><div class="rack-heading"><h2>Shared rack</h2><span>@Rack.Count</span></div><label class="compact-label">Painting<select @bind="RackFilter"><option value="">All paintings</option>@foreach(var art in Client.Artworks){<option value="@art.Id">@art.Title</option>}</select></label><div class="rack-pieces">@foreach(var group in Rack.Where(group=>RackFilter.Length==0||group.ArtworkId==RackFilter)){<button title="@GroupLabel(group)" aria-label="@("Take "+GroupLabel(group))" disabled="@(!Client.CanAct||MyGroups.Count>=6)" @onclick="()=>Claim(group.Id)"><AssemblyPicture Group="group" Artworks="Client.Artworks" Label="@GroupLabel(group)" />@if(group.PieceIds.Count>1){<span class="piece-count">@group.PieceIds.Count</span>}</button>}</div></section>
+    <section class="work-panel">
+     <div class="board-instruction">@(MyGroups.Count==0?"Choose a piece from the rack.":"Drag matching edges together. Turn a cluster when needed.")</div>
+     <svg @ref="Board" class="work-board" viewBox="0 0 14 10" role="img" aria-label="Your assembly work area. Select a cluster below to move it without dragging." data-disabled="@(!Client.CanAct?"true":"false")" data-generation="@Client.Generation">
+      <defs><pattern id="work-grid" width="1" height="1" patternUnits="userSpaceOnUse"><path d="M 1 0 L 0 0 0 1" class="grid-line" /></pattern></defs><rect width="14" height="10" class="board-paper" /><rect width="14" height="10" fill="url(#work-grid)" />
+      @foreach(var group in MyGroups){<g @key="group.Id" class="@(SelectedId==group.Id?"board-cluster selected":"board-cluster")" data-atlas-group="@group.Id" data-x="@F(group.X)" data-y="@F(group.Y)" data-version="@group.Version"><AssemblyTiles Group="group" Artworks="Client.Artworks" /></g>}
+     </svg>
+     <div class="tray-heading"><h2>Your tray</h2><span>@MyGroups.Count / 6 places</span></div><div class="tray">@for(var slot=0;slot<6;slot++){var group=MyGroups.ElementAtOrDefault(slot);if(group is null){<div class="tray-empty" aria-label="Empty tray place">@(slot+1)</div>}else{<button @key="group.Id" class="@(SelectedId==group.Id?"tray-group selected":"tray-group")" aria-pressed="@(SelectedId==group.Id)" aria-label="@("Select "+GroupLabel(group))" disabled="@Client.Busy" @onclick="()=>Select(group.Id)"><AssemblyPicture Group="group" Artworks="Client.Artworks" Label="@GroupLabel(group)" /><span>@group.PieceIds.Count @(group.PieceIds.Count==1?"piece":"pieces")</span></button>}}</div>
+     @if(Selected is {} selected)
+     {
+      <section class="cluster-controls"><h2>@ArtTitle(selected.ArtworkId) <small>@selected.PieceIds.Count @(selected.PieceIds.Count==1?"piece":"pieces")</small></h2><div class="cluster-actions"><button disabled="@(!Client.CanAct)" @onclick="()=>Turn(-1)" aria-label="Turn selected cluster counterclockwise">↶ Turn</button><button disabled="@(!Client.CanAct)" @onclick="()=>Turn(1)" aria-label="Turn selected cluster clockwise">Turn ↷</button><button disabled="@(!Client.CanAct)" @onclick="Return">Return to rack</button></div>
+      <details><summary>Move and join without dragging</summary><div class="accessible-controls"><label>Move by<select @bind="Step"><option value="1">Large step</option><option value="0.1">Small step</option></select></label><div class="move-pad"><button disabled="@(!Client.CanAct)" aria-label="Move selected cluster left" @onclick="()=>Move(-Step,0)">←</button><button disabled="@(!Client.CanAct)" aria-label="Move selected cluster up" @onclick="()=>Move(0,-Step)">↑</button><button disabled="@(!Client.CanAct)" aria-label="Move selected cluster down" @onclick="()=>Move(0,Step)">↓</button><button disabled="@(!Client.CanAct)" aria-label="Move selected cluster right" @onclick="()=>Move(Step,0)">→</button></div><label>Join with<select @bind="JoinTarget" disabled="@(!Client.CanAct)"><option value="">Choose another cluster</option>@foreach(var target in MyGroups.Where(group=>group.Id!=selected.Id)){<option value="@target.Id">@GroupLabel(target)</option>}</select></label><button disabled="@(!Client.CanAct||JoinTarget.Length==0)" @onclick="Join">Join aligned edges</button></div></details>
+      @if(table.Mode=="team"&&table.Members.Any(member=>member.Id!=table.YouId&&member.Status=="active")){<div class="offer-controls"><label>Pass this cluster to<select @bind="OfferTarget" disabled="@(!Client.CanAct)"><option value="">Choose a player</option>@foreach(var member in table.Members.Where(member=>member.Id!=table.YouId&&member.Status=="active")){<option value="@member.Id">@member.Name</option>}</select></label><button disabled="@(!Client.CanAct||OfferTarget.Length==0||table.Offers.Any(offer=>offer.GroupId==selected.Id&&offer.Status=="open"))" @onclick="Offer">Offer cluster</button></div>}
+      </section>
+     }
+    </section>
+    <aside class="table-side">
+     <details class="reference"><summary>View the paintings</summary>@foreach(var art in Client.Artworks){<figure><img src="@art.ImagePath" width="@art.Width" height="@art.Height" alt="@art.Title"><figcaption>@art.Title</figcaption></figure>}</details>
+     @if(Client.Session?.Mode=="room")
+     {
+      <section class="players"><h2>@(Client.RoomConnected?"At this table":"Participants")</h2>@foreach(var member in table.Members){<p><strong>@member.Name</strong>@if(Client.RoomConnected){<span>@Presence(member)</span>}</p>}<details><summary>Invite a friend</summary><input readonly aria-label="Room invitation" value="@InviteUrl"><button disabled="@Client.Busy" @onclick="CopyInvite">Copy invitation</button>@if(CopyMessage.Length>0){<p role="status">@CopyMessage</p>}</details></section>
+      @foreach(var offer in table.Offers.Where(offer=>offer.Status=="open"&&(offer.ToId==table.YouId||offer.FromId==table.YouId)))
+      {var offered=table.Groups.FirstOrDefault(group=>group.Id==offer.GroupId);<section class="trade-card"><h2>@(offer.ToId==table.YouId?MemberName(offer.FromId)+" offers a cluster":"Offer to "+MemberName(offer.ToId))</h2>@if(offered is not null){<AssemblyPicture Group="offered" Artworks="Client.Artworks" Label="@GroupLabel(offered)" /><p>@offered.PieceIds.Count pieces stay joined.</p>}<div class="cluster-actions">@if(offer.ToId==table.YouId){<button disabled="@(!Client.CanAct||MyGroups.Count>=6)" @onclick="()=>Accept(offer.Id)">Accept cluster</button>}<button disabled="@(!Client.CanAct)" @onclick="()=>CancelOffer(offer.Id)">@(offer.ToId==table.YouId?"Decline":"Cancel offer")</button></div></section>}
+      @if(Client.Online?.Me.IsOwner==true&&table.Mode=="team"){<details class="continue-alone"><summary>Continue alone</summary><p>Use this only after the other players' return windows end. Their contributions are kept.</p><label class="check"><input type="checkbox" @bind="ConfirmTakeover" disabled="@Client.Busy">Continue this room alone.</label><button disabled="@(!Client.CanAct||!ConfirmTakeover||table.Members.Any(member=>member.Id!=table.YouId&&member.Status=="active"))" @onclick="Takeover">Continue alone</button></details>}
+     }
+     <details class="how-to"><summary>How to assemble</summary><p>Take a piece onto your tray. Turn it to match the painting, then drag it beside a matching edge. Close edges join and free a tray place.</p><p>You can return a cluster to the rack. In a shared room, offer one to another player; they continue the same joined pieces.</p><p>If you leave a room for a while, your tray may return to the shared rack. Open your saved assembly to rejoin.</p><p>Assemblies and room access are saved on this device. Clearing site data loses that access. Shared tables expire after seven days.</p></details>
+    </aside>
+   </div>
+  </main>
+ }
+ <footer><details class="art-credits"><summary>The paintings</summary>@foreach(var art in Client.Artworks){<p><a href="@art.ObjectUrl" target="_blank" rel="noopener">@art.SourceTitle</a> · @art.Artist, @art.Date<br>@art.CreditLine · <a href="@art.LicenseUrl" target="_blank" rel="noopener">@art.License</a></p>}</details><a href="/privacy/">Privacy</a></footer>
+</div>
+@code {
+ [Parameter]public string? RoomId{get;set;}
+ [SupplyParameterFromQuery(Name="room")]public string? RoomQuery{get;set;}
+ string? InvitationId=>RoomId??RoomQuery;
+ ElementReference Board,AdSurface;IJSObjectReference? BoardModule,AdsModule,PlayerModule;DotNetObjectReference<AssemblyPage>? Reference;string? BoardBinding;bool BoardMounted,BoardMounting,Disposed,AdMounted;CancellationTokenSource Lifetime=new();Task? Polling;
+ string StartupError="",Name="",SelectedId="",RackFilter="",JoinTarget="",OfferTarget="",CopyMessage="";double Step=1;bool ConfirmTakeover;long LastHeartbeat;
+ List<AssemblyGroup> MyGroups=>Client.Table?.Groups.Where(group=>group.Location=="tray"&&group.OwnerId==Client.Table.YouId).ToList()??[];
+ List<AssemblyGroup> Rack=>Client.Table?.Groups.Where(group=>group.Location=="rack").ToList()??[];
+ AssemblyGroup? Selected=>MyGroups.FirstOrDefault(group=>group.Id==SelectedId);
+ SessionSummary? SavedInvitation=>InvitationId is null?null:Client.Library.Sessions.FirstOrDefault(session=>session.RoomId==InvitationId);
+ string InviteUrl=>Client.Session?.RoomId is {} room?new Uri(new Uri(Navigation.BaseUri),"room/"+Uri.EscapeDataString(room)).AbsoluteUri:"";
+ protected override void OnInitialized(){Client.Changed+=ClientChanged;}
+ protected override async Task OnInitializedAsync(){await Initialize();Polling=Poll();}
+ async Task Initialize(){StartupError="";try{await Client.Initialize();}catch(Exception error){StartupError="Refresh the page to try opening the collection again.";Log("paintings unavailable",error.GetType().Name);}}
+ void ClientChanged(){if(Disposed)return;if(Selected is null){SelectedId=MyGroups.FirstOrDefault()?.Id??"";JoinTarget="";OfferTarget="";}_=InvokeAsync(StateHasChanged);}
+ protected override async Task OnAfterRenderAsync(bool firstRender)
+ {
+  if(Disposed)return;
+  var active=Client.Table is {Status:"playing"};
+  if(active&&!BoardMounted&&!BoardMounting)
+  {
+   BoardMounting=true;var sessionId=Client.Session?.Id;
+   try{BoardModule??=await JS.InvokeAsync<IJSObjectReference>("import","./board.mjs");if(Disposed||Client.Table is not {Status:"playing"}||Client.Session?.Id!=sessionId)return;Reference??=DotNetObjectReference.Create(this);var binding=await BoardModule.InvokeAsync<string>("bind",Board,Reference);if(Disposed||Client.Table is not {Status:"playing"}||Client.Session?.Id!=sessionId){await BoardModule.InvokeVoidAsync("dispose",binding);return;}BoardBinding=binding;BoardMounted=true;}
+   catch(JSException error){Log("pointer controls unavailable",error.GetType().Name);}
+   finally{BoardMounting=false;if(!Disposed&&!BoardMounted&&Client.Table is {Status:"playing"}&&Client.Session?.Id!=sessionId)await InvokeAsync(StateHasChanged);}
+  }
+  else if(!active&&BoardMounted&&BoardModule is not null){await BoardModule.InvokeVoidAsync("dispose",BoardBinding);BoardMounted=false;BoardBinding=null;}
+  if(active&&AdMounted&&AdsModule is not null){await AdsModule.InvokeVoidAsync("dispose",AdSurface);AdMounted=false;}
+  else if(!active&&Client.Ready&&!AdMounted){AdMounted=true;_ = MountAd();}
+ }
+ async Task MountAd(){try{AdsModule??=await JS.InvokeAsync<IJSObjectReference>("import","./ads.mjs");if(!Disposed&&Client.Table is not {Status:"playing"})await AdsModule.InvokeAsync<bool>("mount",AdSurface);}catch(JSException error){Log("optional placement unavailable",error.GetType().Name);}}
+ async Task Poll()
+ {
+  using var timer=new PeriodicTimer(TimeSpan.FromSeconds(3));
+  try{while(await timer.WaitForNextTickAsync(Lifetime.Token)){if(Disposed||Client.Busy||Client.RoomUnavailable||Client.Session is not {Mode:"room",Registration:null})continue;var now=Environment.TickCount64;var heartbeat=now-LastHeartbeat>=20000;try{if(heartbeat||!Client.HasPending)await Client.Refresh(heartbeat);if(Client.HasPending)await Client.Reconcile();if(heartbeat)LastHeartbeat=now;}catch(Exception error)when(error is HttpRequestException or AtlasFailure or OperationCanceledException){Log("room refresh unavailable",error.GetType().Name);}}}catch(OperationCanceledException){Log("room observation stopped");}
+ }
+ Task StartSolo()=>Client.Act("start solo",async()=>{await Client.StartSolo();if(!Disposed&&InvitationId is not null)Navigation.NavigateTo("",replace:true);});
+ Task CreateRoom()=>Client.Act("create room",async()=>{await Client.EnterRoom(Name);if(Client.Session?.RoomId is {} id)Navigation.NavigateTo("room/"+Uri.EscapeDataString(id),replace:true);});
+ Task JoinRoom()=>Client.Act("join room",()=>Client.EnterRoom(Name,InvitationId));
+ Task Resume(string id)=>Client.Act("resume assembly",()=>Client.Open(id));
+ Task ResumeRegistration()=>Client.Act("resume room entry",Client.ResumeRegistration);
+ void Gallery(){Client.Gallery();SelectedId="";ConfirmTakeover=false;CopyMessage="";if(InvitationId is not null)Navigation.NavigateTo("",replace:true);}
+ void Select(string id){SelectedId=id;JoinTarget="";OfferTarget="";}
+ Task Claim(string id)=>Command(new{type="claim",groupId=id,expectedRevision=Client.Table?.Revision});
+ Task Turn(int turns)=>Selected is {} group?Command(new{type="rotate",groupId=group.Id,quarterTurns=turns,expectedRevision=Client.Table?.Revision}):Task.CompletedTask;
+ Task Return()=>Selected is {} group?Command(new{type="return",groupId=group.Id,expectedRevision=Client.Table?.Revision}):Task.CompletedTask;
+ Task Move(double x,double y)=>Selected is {} group?Command(new{type="move",groupId=group.Id,x=group.X+x,y=group.Y+y,expectedRevision=Client.Table?.Revision}):Task.CompletedTask;
+ Task Join()=>Selected is {} group?Command(new{type="join",groupId=group.Id,targetGroupId=JoinTarget,expectedRevision=Client.Table?.Revision}):Task.CompletedTask;
+ Task Offer()=>Selected is {} group?Command(new{type="offer",groupId=group.Id,toId=OfferTarget,expectedRevision=Client.Table?.Revision}):Task.CompletedTask;
+ Task Accept(string id)=>Command(new{type="accept",offerId=id,expectedRevision=Client.Table?.Revision});
+ Task CancelOffer(string id)=>Command(new{type="cancelOffer",offerId=id,expectedRevision=Client.Table?.Revision});
+ Task Takeover()=>Client.Act("continue alone",async()=>{await Client.Command(new{type="takeover",expectedRevision=Client.Table?.Revision});ConfirmTakeover=false;});
+ Task Command(object command)=>Client.Act("assembly move",()=>Client.Command(command));
+ Task CheckRoom()=>Client.Act("check move",Client.Reconcile);
+ Task Reconnect()=>Client.Act("reconnect room",Client.Reconnect);
+ Task CheckAvailability()=>Client.Act("check shared tables",Client.CheckRoomAvailability);
+ Task RetryMove()=>Client.Act("retry same move",Client.RetryPending);
+ async Task CopyInvite(){await Client.Act("copy invitation",async()=>{PlayerModule??=await JS.InvokeAsync<IJSObjectReference>("import","./player.mjs");var copied=await PlayerModule.InvokeAsync<bool>("copyInvitation",InviteUrl);CopyMessage=copied?"Invitation copied.":"Select and copy the invitation above.";});}
+ [JSInvokable]public Task OnSelected(SelectedEvent value){if(Disposed)return Task.CompletedTask;if(value.Generation==Client.Generation&&MyGroups.Any(group=>group.Id==value.GroupId))Select(value.GroupId);return InvokeAsync(StateHasChanged);}
+ [JSInvokable]public async Task OnDragged(DragEvent value)
+ {
+  if(Disposed||!Client.CanAct||value.Generation!=Client.Generation||!MyGroups.Any(group=>group.Id==value.GroupId&&group.Version==value.GroupVersion))return;
+  await Client.Act("drag cluster",async()=>
+  {
+   var target=await Client.DragCandidate(value.GroupId,value.X,value.Y);
+   if(Disposed||value.Generation!=Client.Generation||!MyGroups.Any(group=>group.Id==value.GroupId&&group.Version==value.GroupVersion))return;
+   await Client.Command(new{type="move",groupId=value.GroupId,x=value.X,y=value.Y,expectedRevision=Client.Table?.Revision});
+   if(!Client.Failed&&!Client.HasPending&&target is not null&&value.Generation==Client.Generation){await Client.Command(new{type="join",groupId=value.GroupId,targetGroupId=target,expectedRevision=Client.Table?.Revision});SelectedId=target;}
+  });
+ }
+ string ArtTitle(string id)=>Client.Artworks.FirstOrDefault(art=>art.Id==id)?.Title??"Painting";
+ string GroupLabel(AssemblyGroup group){var first=group.Tiles.FirstOrDefault();return ArtTitle(group.ArtworkId)+", "+group.PieceIds.Count+(group.PieceIds.Count==1?" piece":" pieces")+(first is null?"":", row "+(first.Row+1)+", column "+(first.Col+1));}
+ string MemberName(string id)=>Client.Table?.Members.FirstOrDefault(member=>member.Id==id)?.Name??"Player";
+ string Presence(TableMember member){if(member.Status=="reclaimed")return "Away · tray returned";var lease=Client.Online?.Room.Presence.FirstOrDefault(item=>item.PlayerId==member.Id);return lease is not null&&lease.LeaseUntil<(Client.Online?.ServerTime??0)?"Away":"At the table";}
+ static string F(double value)=>value.ToString("0.######",System.Globalization.CultureInfo.InvariantCulture);
+ public async ValueTask DisposeAsync(){if(Disposed)return;Disposed=true;Client.Changed-=ClientChanged;Lifetime.Cancel();if(Polling is not null)await Polling;Lifetime.Dispose();if(BoardModule is not null){try{if(BoardBinding is not null)await BoardModule.InvokeVoidAsync("dispose",BoardBinding);await BoardModule.DisposeAsync();}catch(JSException error){Log("board cleanup unavailable",error.GetType().Name);}}if(AdsModule is not null){try{await AdsModule.InvokeVoidAsync("dispose",AdSurface);await AdsModule.DisposeAsync();}catch(JSException error){Log("placement cleanup unavailable",error.GetType().Name);}}if(PlayerModule is not null)await PlayerModule.DisposeAsync();Reference?.Dispose();}
+ public sealed class SelectedEvent{public string GroupId{get;set;}="";public long Generation{get;set;}}
+ public sealed class DragEvent{public string GroupId{get;set;}="";public int GroupVersion{get;set;}public long Generation{get;set;}public double X{get;set;}public double Y{get;set;}}
+}
