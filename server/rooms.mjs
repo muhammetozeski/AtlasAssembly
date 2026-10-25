@@ -6,10 +6,17 @@ import {cleanupExpiredAtlasData} from './maintenance.mjs';
 
 export const config={configured:true,rulesVersion:'aa-v1',artworkIds:artworks.map(art=>art.id),retentionSeconds:ROOM_MS/1000,leaseSeconds:90,heartbeatSeconds:20,pollSeconds:3,maxPlayers:3,trayLimit:6};
 const responseError=(row)=>fail(row.http_status,row.error_message,row.error_code);
+async function registrationRate(c){
+ const now=Date.now(),address=c.request.headers.get('CF-Connecting-IP')?.trim();
+ const scope=address&&/^[0-9a-f:.]{3,64}$/i.test(address)
+  ?'atlas-register:cf:'+await hash(canonical({domain:'atlas-assembly/registration/ip/v1',minute:Math.floor(now/60000),address:address.toLowerCase()}))
+  :'atlas-register:local';
+ await rate(c.db,scope,90,60,now);
+}
 async function registration(c,kind,id){
  const body=await readBody(c.request);shape(body,kind==='create'?['opId','requestKey','name','seed']:['opId','requestKey','name']);const opId=uuid(body.opId),proof=secret(body.requestKey),name=nameOf(body.name);
  if(body.seed!==undefined&&(!Number.isInteger(body.seed)||body.seed<0||body.seed>4294967295))fail(400,'Choose a seed from 0 to 4294967295.','invalid_seed');
- await rate(c.db,'atlas-register',90);
+ await registrationRate(c);
  const signature=await hash(canonical({kind,roomId:id??null,...body}));
  let registered=await c.db.prepare('SELECT * FROM atlas_registrations WHERE op_id=?').bind(opId).first();
  if(registered&&registered.signature!==signature)fail(409,'This request belongs to a different room action.','operation_mismatch');
