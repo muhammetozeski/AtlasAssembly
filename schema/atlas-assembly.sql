@@ -1,0 +1,9 @@
+PRAGMA foreign_keys=ON;
+CREATE TABLE IF NOT EXISTS atlas_rooms(id TEXT PRIMARY KEY,state TEXT NOT NULL,revision INTEGER NOT NULL,owner_key_hash TEXT NOT NULL,write_id TEXT NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,expires_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS atlas_players(room_id TEXT NOT NULL REFERENCES atlas_rooms(id) ON DELETE CASCADE,id TEXT NOT NULL,key_hash TEXT NOT NULL,lease_until INTEGER NOT NULL,reclaimed_at INTEGER,last_seen INTEGER NOT NULL,PRIMARY KEY(room_id,id),UNIQUE(room_id,key_hash));
+CREATE TABLE IF NOT EXISTS atlas_receipts(room_id TEXT NOT NULL REFERENCES atlas_rooms(id) ON DELETE CASCADE,player_id TEXT NOT NULL,op_id TEXT NOT NULL,signature TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN('pending','accepted','rejected')),revision INTEGER,error_code TEXT,error_message TEXT,http_status INTEGER NOT NULL DEFAULT 200,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,PRIMARY KEY(room_id,player_id,op_id),FOREIGN KEY(room_id,player_id) REFERENCES atlas_players(room_id,id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS atlas_registrations(op_id TEXT PRIMARY KEY,kind TEXT NOT NULL CHECK(kind IN('create','join')),signature TEXT NOT NULL,room_id TEXT NOT NULL,player_id TEXT NOT NULL,seed INTEGER,status TEXT NOT NULL CHECK(status IN('pending','accepted','rejected')),error_code TEXT,error_message TEXT,http_status INTEGER NOT NULL DEFAULT 200,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS atlas_rate_limits(rate_key TEXT PRIMARY KEY,count INTEGER NOT NULL,expires_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS atlas_rooms_expiry ON atlas_rooms(expires_at);
+CREATE INDEX IF NOT EXISTS atlas_player_leases ON atlas_players(room_id,reclaimed_at,lease_until);
+CREATE INDEX IF NOT EXISTS atlas_registration_expiry ON atlas_registrations(expires_at);
